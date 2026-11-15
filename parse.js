@@ -9,6 +9,10 @@
 // after an unclosed <a> in an earlier paragraph is not formed).
 // Explicit <...> autolinks are NOT suppressed by it.
 let docInLink = false;
+// When true, block parsing collects link reference definitions but
+// skips inline rendering (the first pass of parseBlocks discards its
+// HTML; only the refs map matters). This makes the first pass cheap.
+let collectOnly = false;
 
 export function parse(src) {
   docInLink = false;
@@ -256,7 +260,13 @@ function renderDelim(d) {
   // characters an opener consumes are the last of its run (next to the
   // content it opens); the leftover sits between them.
   const left = d.len - d.openUsed - d.closeUsed;
-  return d.closeTags.join('') + (left > 0 ? d.ch.repeat(left) : '') + d.openTags.join('');
+  const lit = left > 0 ? d.ch.repeat(left) : '';
+  // A strong closer matched while the openers-bottom was set leaves
+  // its unused characters inside the emphasis (see processDelims).
+  if (d.leftoverInside && d.closeTags.length > 0) {
+    return lit + d.closeTags.join('') + d.openTags.join('');
+  }
+  return d.closeTags.join('') + lit + d.openTags.join('');
 }
 
 // CommonMark emphasis algorithm over the delimiter records (document
@@ -334,6 +344,12 @@ function processDelims(delims) {
         d.closeUsed += use;
         o.openTags.unshift(openTag);
         d.closeTags.push(closeTag);
+        // When a strong closer matches while the openers-bottom for
+        // this character is set (an inner emphasis was closed by a
+        // both-ways delimiter, e.g. '**a *b*c***'), the run's unused
+        // characters sit inside the emphasis, before its closing tag
+        // ('<strong>a <em>b</em>c*</strong>'), not after it.
+        if (use === 2 && bottom[d.ch]) d.leftoverInside = true;
         // A closer that can also open sets the openers-bottom just
         // below the opener it matched (the opener below it, if any) —
         // but only when the matched opener cannot itself close. When
@@ -1905,6 +1921,7 @@ function listCanInterrupt(lm, inList) {
 }
 
 function renderTable(headerLine, aligns, bodyLines, refs) {
+  if (collectOnly) return '';
   const headerCells = tableRowCells(headerLine);
   let out = '<table>\n<thead>\n<tr>\n';
   for (let k = 0; k < headerCells.length; k++) {
@@ -2014,6 +2031,7 @@ function parseParagraph(lines, start, end, refs, tight, inList) {
     return ['', i];
   }
   if (setextLevel) {
+    if (collectOnly) return ['', i];
     const text = rest.map((l) => l.replace(/^[ \t]+/, '')).join('\n').trim();
     return ['<h' + setextLevel + '>' + inline(text, refs, false, null) + '</h' + setextLevel + '>\n', i];
   }
@@ -2033,6 +2051,7 @@ function consumeRefDefs(paraLines, refs) {
 function renderPara(lines, refs, tight) {
   // Paragraph lines keep their leading whitespace verbatim (marked
   // preserves it, even on the first line and on continuation lines).
+  if (collectOnly) return '';
   const text = lines.join('\n');
   const inner = inline(text, refs, false, null);
   if (tight) return inner;
@@ -2061,6 +2080,7 @@ function parseRange(lines, start, end, refs, tight, inList) {
     const indent = lineIndent(line);
     const atx = atxHeading(line);
     if (atx) {
+      if (collectOnly) { i++; continue; }
       out += '<h' + atx.level + '>' + inline(atx.content, refs, false, null) + '</h' + atx.level + '>\n';
       i++;
       continue;
@@ -2582,7 +2602,11 @@ function parseBlocks(src) {
   const refs = new Map();
   // Link reference definitions may appear after their first use, and they
   // apply document-wide, so collect them in a first pass, then render.
+  // The first pass skips inline rendering (collectOnly) since its HTML
+  // is discarded; only the refs map is kept.
+  collectOnly = true;
   parseRange(lines, 0, lines.length, refs, false);
+  collectOnly = false;
   // The first pass renders inline content too, which leaves docInLink
   // set from any unclosed '<a' it met; the render pass must start
   // clean, or autolinks in early paragraphs get wrongly suppressed.
