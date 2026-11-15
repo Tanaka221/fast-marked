@@ -1359,6 +1359,7 @@ function inline(src, refs, plain, state) {
           flush();
           if (!plain) parts.push(t[0]);
           // Track <a> / </a> for the document-level inLink flag.
+          // '<a' opens a link context, '</a>' closes one.
           if (/^<a[\s/>]/i.test(t[0])) docInLink = true;
           else if (/^<\/a\s*>/i.test(t[0])) docInLink = false;
           last = t[1];
@@ -2232,8 +2233,12 @@ function parseRange(lines, start, end, refs, tight, inList) {
       }
       // A line of only spaces after the block is not a true blank line
       // for this purpose: '</pre>\n   \n1. ...' keeps '</pre>\n', while
-      // '</pre>\n\n1. ...' (a truly empty line) does not.
-      const nextNonBlank = i < end && lines[i] !== '';
+      // '</pre>\n\n1. ...' (a truly empty line) does not. This only
+      // applies to types 1-5, which end at a terminator: types 6-7
+      // end at a blank line, so the line after them is blank by
+      // definition and no newline is kept ('<div>\nfoo\n</div>\n\t\npara'
+      // gives '</div><p>para</p>', not '</div>\n<p>para</p>').
+      const nextNonBlank = htype <= 5 && i < end && lines[i] !== '';
       if ((restBlank && end > 0 && lines[end - 1] === '') || nextNonBlank) out += '\n';
       continue;
     }
