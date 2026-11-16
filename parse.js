@@ -1,17 +1,16 @@
-// fast-marked: a fast, dependency-free Markdown parser producing
-// byte-identical output to marked 18.1.3 (default options: gfm, no breaks,
-// no pedantic, sync). Written from scratch for the make.fun
-// markdown-render-speed-02 bounty. Export: parse(markdown) -> HTML string.
+// fast-marked — a dependency-free Markdown parser whose output matches
+// marked 18.1.3 byte for byte under default options (GFM on, breaks off,
+// pedantic off, sync rendering). Written fresh for the make.fun
+// markdown-render-speed-02 bounty. Single export: parse(markdown) -> HTML.
 
-// Document-level "inside a link" flag, mirroring marked's Lexer state:
-// an <a ...> tag met during inline parsing sets it, </a> clears it, and
-// it persists across paragraphs (so a bare email/www/scheme autolink
-// after an unclosed <a> in an earlier paragraph is not formed).
-// Explicit <...> autolinks are NOT suppressed by it.
+// Document-wide flag mirroring marked's Lexer: an <a ...> tag seen while
+// parsing inline content sets it, </a> clears it, and it survives across
+// paragraphs. A bare www/email/scheme autolink after an unclosed <a> in
+// an earlier paragraph is therefore not formed. Explicit <...> autolinks
+// are unaffected by it.
 let docInLink = false;
-// When true, block parsing collects link reference definitions but
-// skips inline rendering (the first pass of parseBlocks discards its
-// HTML; only the refs map matters). This makes the first pass cheap.
+// During the first block pass we only gather link reference definitions
+// and throw the HTML away, so inline rendering is skipped to save time.
 let collectOnly = false;
 
 export function parse(src) {
@@ -20,7 +19,7 @@ export function parse(src) {
 }
 
 // ---------------------------------------------------------------------------
-// Character helpers and escaping
+// Escaping and small character helpers
 // ---------------------------------------------------------------------------
 
 const ESC = {
@@ -31,23 +30,22 @@ const ESC = {
   "'": '&#39;',
 };
 
-// Entity-aware escape: & < > " ' are escaped, except that an & starting a
-// valid entity reference (&name; &#123; &#x1F600;) is kept verbatim.
+// Escape text, but leave a valid entity reference (&name; &#123; &#x1F;)
+// untouched.
 const ENT_RE = /&(#\d{1,7};|#[Xx][0-9A-Fa-f]{1,6};|[A-Za-z0-9_]+;)|[&<>"']/g;
 function esc(s) {
   return s.replace(ENT_RE, (m, ent) => (ent ? '&' + ent : ESC[m]));
 }
 
-// Plain escape for code content: every & < > " ' is escaped, entities
-// included (&copy; becomes &amp;copy;).
+// Escape code content: every special char is escaped, entities included.
 const ESC_PLAIN_RE = /[&<>"']/g;
 function escPlain(s) {
   return s.replace(ESC_PLAIN_RE, (c) => ESC[c]);
 }
 
-// Encode a link/image destination the way marked does: encodeURI, then
-// restore %25 to %, then entity-aware escape. Returns null when encodeURI
-// throws (lone surrogate), which makes the link fail.
+// Encode a link/image destination like marked: encodeURI, then put %25
+// back to %, then entity-escape. Null when encodeURI throws (a lone
+// surrogate), which makes the whole link fail.
 function encodeHref(dest) {
   let u;
   try {
@@ -58,9 +56,9 @@ function encodeHref(dest) {
   return esc(u.replace(/%25/g, '%'));
 }
 
-// Parse a numeric character reference at src[i] ('&' + '#'). Returns
-// [decodedChar, lengthConsumed] or null. 0, >0x10FFFF and surrogates map
-// to U+FFFD. Decimal allows up to 7 digits, hex up to 6.
+// A numeric character reference at src[i] (an '&' followed by '#').
+// Returns [decoded, consumed] or null. 0, surrogates and values above
+// 0x10FFFF become U+FFFD. Decimal takes at most 7 digits, hex at most 6.
 function numericEntity(src, i) {
   if (src.charCodeAt(i + 1) !== 35) return null; // '#'
   let j = i + 2;
@@ -103,7 +101,7 @@ function isAsciiPunct(c) {
   );
 }
 
-// Unicode punctuation (CommonMark: general categories P and S).
+// Unicode punctuation (CommonMark categories P and S).
 const PUNCT_RE = /[\p{P}\p{S}]/u;
 function isPunctCh(ch) {
   return ch !== '' && PUNCT_RE.test(ch);
@@ -130,8 +128,8 @@ function isBlank(line) {
   return true;
 }
 
-// Blank for table-body purposes: only spaces (or empty). A line
-// containing a tab is a table body row, not a blank line.
+// Blank for table bodies: spaces only (or empty). A line holding a tab
+// is a table body row, not a blank line.
 function isTableBlank(line) {
   for (let i = 0; i < line.length; i++) {
     if (line.charCodeAt(i) !== 32) return false;
@@ -139,7 +137,7 @@ function isTableBlank(line) {
   return true;
 }
 
-// Indent of a line in columns; a tab advances to the next multiple of 4.
+// Indent of a line in columns; a tab jumps to the next multiple of 4.
 function lineIndent(line) {
   let col = 0;
   for (let i = 0; i < line.length; i++) {
@@ -151,9 +149,8 @@ function lineIndent(line) {
   return col;
 }
 
-// Expand leading tabs to spaces, given the column the line starts at.
-// A tab advances to the next multiple of 4. Only leading whitespace is
-// expanded; tabs after the first non-whitespace character are untouched.
+// Expand leading tabs to spaces, measuring from startCol. Only leading
+// whitespace is expanded; tabs past the first non-space stay as-is.
 function expandLeadingTabs(line, startCol) {
   let col = startCol || 0;
   let i = 0;
@@ -174,12 +171,12 @@ function expandLeadingTabs(line, startCol) {
   return out + line.slice(i);
 }
 
-// Remove up to n columns of leading indent. A tab that straddles the
-// cut is removed entirely (marked drops the whole tab, it does not
-// turn the part beyond the cut into spaces: '  ```\n\tfoo' yields
-// 'foo', not '  foo'). A tab that starts at or beyond the cut is kept
-// as a tab (it is part of the content, e.g. indented code
-// '    \tfoo' strips to '\tfoo', not '    foo').
+// Drop up to n columns of leading indent. A tab straddling the cut is
+// removed wholesale (marked drops the whole tab instead of turning the
+// part past the cut into spaces: '  ```\n\tfoo' gives 'foo', not
+// '  foo'). A tab starting at or beyond the cut is kept as a tab (it
+// belongs to the content, e.g. indented code '    \tfoo' strips to
+// '\tfoo', not '    foo').
 function stripColumns(line, n) {
   if (n <= 0) return line;
   let col = 0;
@@ -203,11 +200,11 @@ function stripColumns(line, n) {
   return line.slice(i);
 }
 
-// Same, but for lines that will be re-parsed as block content (list
-// item lines): expand leading tabs to spaces first, so a tab's width
-// is measured from its original column (cm-005: '- foo\n\n\t\tbar'
-// must yield code content '  bar', which needs the second tab to
-// count as four spaces, not two).
+// Like stripColumns, but for lines re-parsed as block content (list item
+// lines): expand leading tabs to spaces first, so a tab's width is
+// measured from its original column (cm-005: '- foo\n\n\t\tbar' must
+// give code content '  bar', which needs the second tab to count as
+// four spaces, not two).
 function stripColumnsExpand(line, n) {
   if (n <= 0) return line;
   const expanded = expandLeadingTabs(line, 0);
@@ -224,11 +221,11 @@ const BLOCK_TAGS = new Set(
 );
 
 // ---------------------------------------------------------------------------
-// Inline parsing: delimiters, code spans, HTML tags, autolinks
+// Inline parsing: emphasis delimiters, code spans, HTML tags, autolinks
 // ---------------------------------------------------------------------------
 
-// Left/right flanking of a delimiter run from its neighbouring characters
-// ('' at the edges). Returns [canOpen, canClose] base values.
+// Left/right flanking of a delimiter run from its neighbours ('' at the
+// edges). Returns [canOpen, canClose] base values.
 function flanking(before, after) {
   const beforeWs = before === '' || isWsCh(before);
   const afterWs = after === '' || isWsCh(after);
@@ -261,16 +258,16 @@ function renderDelim(d) {
   // content it opens); the leftover sits between them.
   const left = d.len - d.openUsed - d.closeUsed;
   const lit = left > 0 ? d.ch.repeat(left) : '';
-  // A strong closer matched while the openers-bottom was set leaves
-  // its unused characters inside the emphasis (see processDelims).
+  // A strong closer matched while the openers-bottom was set leaves its
+  // unused characters inside the emphasis (see processDelims).
   if (d.leftoverInside && d.closeTags.length > 0) {
     return lit + d.closeTags.join('') + d.openTags.join('');
   }
   return d.closeTags.join('') + lit + d.openTags.join('');
 }
 
-// CommonMark emphasis algorithm over the delimiter records (document
-// order). Matching consumes run characters and records <em>/<strong> tags.
+// CommonMark emphasis matching over the delimiter records (document
+// order). Matches consume run characters and record <em>/<strong> tags.
 function processDelims(delims) {
   const stack = [];
   // Openers-bottom, per delimiter character: when a delimiter that can
